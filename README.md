@@ -7,6 +7,9 @@
 - /position — 逐历元独立解算接收机 ECEF 位置与钟差（C1C 单点定位）；
 - /tec — GPS 双频（C1C/C2W/L1C/L2W）电离层 TEC 监测，输出逐星逐历元
   斜向/垂直 TEC、弧编号、穿刺点地心经纬度与排除原因。
+- /reflectometry — 单频（S1C，L1 C/A 信噪比）GNSS-IR 反射测高：
+  由干涉振荡反演天线相位中心下方反射面高度 H，结合天线相位中心相对
+  水尺零点高程 Z 输出水位 Z - H。
 
 ## 环境
 
@@ -29,12 +32,24 @@ TEC 监测（站点 WGS84 经纬高 + 逐星合并码偏差 JSON，单位 ns）�
          -F "biases=$(cat examples/biases.json)" \
          http://127.0.0.1:8000/tec | python3 -m json.tool
 
+反射测高（站点 WGS84 经纬高、天线相位中心相对水尺零点高程 Z、
+反射高度搜索网格下界/上界/步长，单位米；网格最多 5001 点）：
+
+    curl -s -F "rinex=@examples/obs_reflect.rnx" -F "sp3=@examples/eph.sp3" \
+         -F "station_lat_deg=30.0" -F "station_lon_deg=114.0" \
+         -F "station_height_m=50.0" -F "antenna_height_m=12.0" \
+         -F "h_min_m=1.0" -F "h_max_m=8.0" -F "h_step_m=0.005" \
+         http://127.0.0.1:8000/reflectometry | python3 -m json.tool
+
+合成样例真值：H=3.6 m、Z=12.0 m，已知水位 8.4 m。
+
 返回每个历元：状态与失败原因、ECEF 米坐标、WGS84 经纬度与椭球高、
 接收机钟差（秒）、使用/排除的卫星（含排除原因）、逐星残差（米）与 RMS。
 
 ## 生成合成示例数据
 
     .venv/bin/python examples/make_synthetic.py   # 写 examples/obs.rnx, examples/eph.sp3
+    .venv/bin/python examples/make_reflect.py     # 写 examples/obs_reflect.rnx（仅 S1C）
 
 ## 测试
 
@@ -55,6 +70,11 @@ TEC 监测（站点 WGS84 经纬高 + 逐星合并码偏差 JSON，单位 ns）�
   补偿信号飞行期间地球自转（Sagnac）；至少 4 颗有效卫星且几何满秩才求解；
   头部近似坐标只作初值，不沿用上一历元结果。
 - 不足 4 星、秩亏或不收敛的历元返回原因，其余历元继续。
+- 观测头允许只声明 S1C（反射测高仅需 S1C）；/position 与 /tec 各自
+  检查所需观测类型，缺失时明确拒绝。全空（所有字段空白）的卫星记录
+  在解析结果中保留，下游报告为缺测而不是静默消失。
+- SP3 插值不跨时间节点缺口：8 节点窗口内相邻节点间隔超过名义间隔
+  1.5 倍即拒绝插值并给出原因。
 
 ## TEC 解算规则
 
@@ -82,6 +102,25 @@ TEC 监测（站点 WGS84 经纬高 + 逐星合并码偏差 JSON，单位 ns）�
 仅 C1C 伪距单点定位，无电离层/对流层/载波/多路径改正，
 合成数据下亚米级；实际观测精度为米级，受大气延迟与观测噪声主导。
 
+## 反射测高解算规则
+
+- 模型假设：静止平面反射面（水面）、镜面反射点在天线正下方、
+  不做对流层折射改正；水位 = Z - H。
+- 仅用 S1C（L1 C/A 信噪比，dB-Hz）；卫星位置复用定位链路的 8 节点
+  Lagrange 插值（接收历元取值，不跨缺失节点、不外推），仰角在站点
+  局部 ENU 系计算，仅取 5–25 度窗口内的历元。
+- 分弧：缺 S1C、无星历、相邻历元间隔 >120 s、仰角升/落反转或任何
+  被过滤的历元均断弧（弧不跨过滤缺口）；弧内仰角单调。
+- 弧有效性：至少 12 个点且仰角跨度至少 5 度，否则标 failed 并注明原因。
+- 反演：S1C 按 10^(S1C/20) 转线性幅度；在 sin(仰角) 上拟合并减去
+  二次趋势；对网格每个 H 以最小二乘拟合相位 4*pi*H*sin(仰角)/lambda1
+  的正弦、余弦与常数项，取残差平方和最小的 H（同值取较小 H）；
+  非等间隔采样不做 FFT。拟合秩亏或去趋势后无剩余波动的弧标 failed；
+  最优值落在网格边界时给出 warning。
+- 输出：逐星逐历元记录（状态与排除原因、仰角、S1C）及逐弧结果
+  （起止时间、升/落方向、样本来源 S1C 与样本列表、反射高度 H、
+  水位 Z-H、幅值、残差 RMS、RSS 高度曲线与警告）。
+
 ## 模块划分
 
 - gnss_reflect212/rinex.py — RINEX 3.04 解析与校验
@@ -89,5 +128,7 @@ TEC 监测（站点 WGS84 经纬高 + 逐星合并码偏差 JSON，单位 ns）�
 - gnss_reflect212/interp.py — 位置 Lagrange / 钟差线性插值
 - gnss_reflect212/solver.py — 逐历元最小二乘定位
 - gnss_reflect212/tec.py — 双频几何无关组合、分弧定级、薄壳映射与穿刺点
+- gnss_reflect212/reflect.py — S1C 反射测高：ENU 仰角过滤、单调分弧、
+  去趋势与网格搜索反演
 - gnss_reflect212/geodesy.py — WGS84 坐标转换与常数
 - gnss_reflect212/main.py — FastAPI 入口

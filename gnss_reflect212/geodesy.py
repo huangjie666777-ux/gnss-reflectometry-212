@@ -50,3 +50,27 @@ def geodetic_to_ecef(lat_deg: float, lon_deg: float, h: float) -> np.ndarray:
 def epoch_to_seconds(t: dt.datetime) -> float:
     """Seconds since GPS epoch (continuous, week-rollover safe)."""
     return (t - GPS_EPOCH).total_seconds()
+
+
+def enu_vector(station_ecef: np.ndarray, lat_deg: float, lon_deg: float,
+               sat_ecef: np.ndarray) -> tuple[float, float, float]:
+    """Satellite vector in the station local ENU frame (meters)."""
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+    d = np.asarray(sat_ecef, dtype=float) - np.asarray(station_ecef, dtype=float)
+    east = -math.sin(lon) * d[0] + math.cos(lon) * d[1]
+    north = (-math.sin(lat) * math.cos(lon) * d[0]
+             - math.sin(lat) * math.sin(lon) * d[1]
+             + math.cos(lat) * d[2])
+    up = (math.cos(lat) * math.cos(lon) * d[0]
+          + math.cos(lat) * math.sin(lon) * d[1]
+          + math.sin(lat) * d[2])
+    return east, north, up
+
+
+def elevation_deg(station_ecef: np.ndarray, lat_deg: float, lon_deg: float,
+                  sat_ecef: np.ndarray) -> float:
+    """Elevation angle (deg) of a satellite above the local horizon (ENU)."""
+    east, north, up = enu_vector(station_ecef, lat_deg, lon_deg, sat_ecef)
+    horiz = math.hypot(east, north)
+    return math.degrees(math.atan2(up, horiz))

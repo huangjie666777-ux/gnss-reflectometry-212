@@ -34,6 +34,11 @@ def satellite_position(rec: SatRecord, t: float) -> tuple[np.ndarray | None, str
         return None, "outside SP3 coverage (needs 8-node window, no extrapolation)"
     if not all(rec.pos_valid[k] for k in win):
         return None, "zero/invalid coordinates inside interpolation window"
+    # never interpolate across a gap in the ephemeris time nodes
+    nominal = min(b - a for a, b in zip(rec.times, rec.times[1:]))
+    for a, b in zip(win, win[1:]):
+        if rec.times[b] - rec.times[a] > 1.5 * nominal:
+            return None, "gap in SP3 time nodes inside interpolation window"
     ts = [rec.times[k] for k in win]
     pos = np.zeros(3)
     for j, k in enumerate(win):

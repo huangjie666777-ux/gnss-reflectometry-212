@@ -2,7 +2,9 @@
 
 Parses every declared GPS observation type; each value carries its LLI
 (loss-of-lock indicator). C1C pseudoranges feed positioning; C1C/C2W/L1C/L2W
-feed the dual-frequency TEC pipeline.
+feed the dual-frequency TEC pipeline; S1C (L1 C/A SNR) feeds single-frequency
+reflectometry. Any subset of these may be declared (e.g. an S1C-only header);
+each endpoint checks for the observation types it needs.
 """
 
 from __future__ import annotations
@@ -130,8 +132,6 @@ def parse_rinex(text: str) -> RinexData:
         break
     if obs_types is None:
         raise RejectedContentError("no GPS (G) observation types in header", FILE, 0)
-    if "C1C" not in obs_types:
-        raise RejectedContentError("C1C pseudorange not present in obs types", FILE, 0)
 
     # --- approximate position (initial guess only) ---
     approx = None
@@ -204,10 +204,11 @@ def parse_rinex(text: str) -> RinexData:
                     raise RinexParseError(
                         f"invalid LLI flag {lli_raw!r} for {otype}", FILE, oln)
                 sat_obs[otype] = (val, int(lli_raw) if lli_raw else 0)
-            if sat_obs:
-                obs.obs[prn.strip()] = sat_obs
-                if "C1C" in sat_obs:
-                    obs.pseudoranges[prn.strip()] = sat_obs["C1C"][0]
+            # keep the record even when every field is blank/zero so the
+            # satellite does not silently vanish from downstream reports
+            obs.obs[prn.strip()] = sat_obs
+            if "C1C" in sat_obs:
+                obs.pseudoranges[prn.strip()] = sat_obs["C1C"][0]
             i += 1
         epochs.append(obs)
         if len(epochs) > MAX_EPOCHS:
