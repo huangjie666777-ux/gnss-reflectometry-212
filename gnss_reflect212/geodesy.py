@@ -50,3 +50,20 @@ def geodetic_to_ecef(lat_deg: float, lon_deg: float, h: float) -> np.ndarray:
 def epoch_to_seconds(t: dt.datetime) -> float:
     """Seconds since GPS epoch (continuous, week-rollover safe)."""
     return (t - GPS_EPOCH).total_seconds()
+
+
+def elevation_azimuth(station_ecef: np.ndarray, lat_deg: float, lon_deg: float,
+                      sat_ecef: np.ndarray) -> tuple[float, float]:
+    """Elevation and azimuth (deg) of a satellite in the station's local ENU."""
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+    d = np.asarray(sat_ecef, dtype=float) - np.asarray(station_ecef, dtype=float)
+    e = -math.sin(lon) * d[0] + math.cos(lon) * d[1]
+    n = -math.sin(lat) * math.cos(lon) * d[0] - math.sin(lat) * math.sin(lon) * d[1] \
+        + math.cos(lat) * d[2]
+    u = math.cos(lat) * math.cos(lon) * d[0] + math.cos(lat) * math.sin(lon) * d[1] \
+        + math.sin(lat) * d[2]
+    horiz = math.hypot(e, n)
+    elev = math.degrees(math.atan2(u, horiz))
+    az = math.degrees(math.atan2(e, n)) % 360.0
+    return elev, az

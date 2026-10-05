@@ -130,8 +130,8 @@ def parse_rinex(text: str) -> RinexData:
         break
     if obs_types is None:
         raise RejectedContentError("no GPS (G) observation types in header", FILE, 0)
-    if "C1C" not in obs_types:
-        raise RejectedContentError("C1C pseudorange not present in obs types", FILE, 0)
+    # C1C is NOT required here: reflectometry needs S1C only. Endpoints that
+    # need specific types (position: C1C, tec: C1C/C2W/L1C/L2W) check themselves.
 
     # --- approximate position (initial guess only) ---
     approx = None
@@ -204,10 +204,11 @@ def parse_rinex(text: str) -> RinexData:
                     raise RinexParseError(
                         f"invalid LLI flag {lli_raw!r} for {otype}", FILE, oln)
                 sat_obs[otype] = (val, int(lli_raw) if lli_raw else 0)
-            if sat_obs:
-                obs.obs[prn.strip()] = sat_obs
-                if "C1C" in sat_obs:
-                    obs.pseudoranges[prn.strip()] = sat_obs["C1C"][0]
+            # keep the satellite record even when every field is blank, so
+            # downstream pipelines can report it instead of losing it silently
+            obs.obs[prn.strip()] = sat_obs
+            if "C1C" in sat_obs:
+                obs.pseudoranges[prn.strip()] = sat_obs["C1C"][0]
             i += 1
         epochs.append(obs)
         if len(epochs) > MAX_EPOCHS:

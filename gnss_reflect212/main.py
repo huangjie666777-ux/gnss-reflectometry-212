@@ -1,4 +1,5 @@
-"""FastAPI entry point: RINEX 3.04 + SP3-c positioning and GPS dual-band TEC."""
+"""FastAPI entry point: RINEX 3.04 + SP3-c positioning, GPS dual-band TEC
+and single-frequency GNSS-IR water-level reflectometry (S1C)."""
 
 from __future__ import annotations
 
@@ -9,12 +10,14 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from .errors import GnssError
 from .geodesy import geodetic_to_ecef
+from .reflect import MAX_GRID_POINTS, compute_reflectometry
 from .rinex import RinexData, parse_rinex
 from .solver import solve_all
 from .sp3 import Sp3Data, parse_sp3
 from .tec import REQUIRED_OBS, compute_tec
 
-app = FastAPI(title="GNSS Positioning + Ionosphere TEC", version="0.2.0")
+app = FastAPI(title="GNSS Positioning + Ionosphere TEC + Reflectometry",
+              version="0.3.0")
 
 
 async def _read_inputs(rinex: UploadFile, sp3: UploadFile) -> tuple[RinexData, Sp3Data]:
@@ -42,6 +45,9 @@ async def _read_inputs(rinex: UploadFile, sp3: UploadFile) -> tuple[RinexData, S
 @app.post("/position")
 async def position(rinex: UploadFile = File(...), sp3: UploadFile = File(...)):
     obs, eph = await _read_inputs(rinex, sp3)
+    if "C1C" not in obs.obs_types_gps:
+        raise HTTPException(422, "RINEX rejected: C1C pseudorange required for "
+                                 "positioning not declared in header")
     results = solve_all(obs.epochs, eph, obs.approx_position)
     return {
         "n_epochs": len(results),
@@ -132,6 +138,78 @@ async def tec(
         "Slant TEC = GF / (40.3*(1/f2^2 - 1/f1^2)) in TECU; sign preserved.",
         "Thin-shell mapping at 6821 km geocentric radius; VTEC = STEC*cos(theta); "
         "pierce point reported in geocentric lat/lon.",
+    ]
+    return result
+
+
+@app.post("/reflect")
+async def reflect(
+    rinex: UploadFile = File(...),
+    sp3: UploadFile = File(...),
+    station_lat_deg: float = Form(...),
+    station_lon_deg: float = Form(...),
+    station_height_m: float = Form(...),
+    antenna_height_z_m: float = Form(...),
+    reflector_min_m: float = Form(...),
+    reflector_max_m: float = Form(...),
+    reflector_step_m: float = Form(...),
+):
+    """GNSS-IR water level from S1C SNR arcs (static planar reflector).
+
+    antenna_height_z_m is the antenna phase-center height Z above the gauge
+    zero; reported water level is Z - H with H the estimated reflector height.
+    """
+    obs, eph = await _read_inputs(rinex, sp3)
+
+    for name, val, lo, hi in (
+        ("station_lat_deg", station_lat_deg, -90.0, 90.0),
+        ("station_lon_deg", station_lon_deg, -180.0, 180.0),
+        ("station_height_m", station_height_m, -1000.0, 10000.0),
+        ("antenna_height_z_m", antenna_height_z_m, 0.0, 1000.0),
+    ):
+        if not math.isfinite(val) or not (lo <= val <= hi):
+            raise HTTPException(422, f"{name}: value {val} not finite or out of "
+                                     f"[{lo}, {hi}]")
+    for name, val in (("reflector_min_m", reflector_min_m),
+                      ("reflector_max_m", reflector_max_m),
+                      ("reflector_step_m", reflector_step_m)):
+        if not math.isfinite(val):
+            raise HTTPException(422, f"{name}: value {val} not finite")
+    if reflector_min_m <= 0.0 or reflector_max_m <= reflector_min_m:
+        raise HTTPException(422, "reflector height bounds must be positive and "
+                                 "strictly increasing (0 < min < max)")
+    if reflector_step_m <= 0.0:
+        raise HTTPException(422, "reflector_step_m must be positive")
+    n_grid = int(round((reflector_max_m - reflector_min_m) / reflector_step_m)) + 1
+    if n_grid > MAX_GRID_POINTS:
+        raise HTTPException(422, f"reflector grid would have {n_grid} points "
+                                 f"(> {MAX_GRID_POINTS}); increase the step or "
+                                 "narrow the interval")
+
+    if "S1C" not in obs.obs_types_gps:
+        raise HTTPException(422, "RINEX rejected: S1C signal-to-noise required "
+                                 "for reflectometry not declared in header")
+
+    station_ecef = geodetic_to_ecef(station_lat_deg, station_lon_deg,
+                                    station_height_m)
+    result = compute_reflectometry(obs, eph, station_ecef, station_lat_deg,
+                                   station_lon_deg, antenna_height_z_m,
+                                   reflector_min_m, reflector_max_m,
+                                   reflector_step_m)
+    result["station"] = {
+        "lat_deg": station_lat_deg,
+        "lon_deg": station_lon_deg,
+        "height_m": station_height_m,
+        "ecef_m": [float(v) for v in station_ecef],
+    }
+    result["notes"] = [
+        "Static horizontal planar reflector; atmospheric refraction neglected.",
+        "S1C converted to linear amplitude by 10^(S1C/20); quadratic trend in "
+        "sin(elevation) removed per arc.",
+        "Uneven sin(elevation) sampling: regular-grid height scan with cos/sin "
+        "+ constant least-squares fit instead of FFT; ties resolve to smaller H.",
+        "Water level = Z - H (antenna phase-center height above gauge zero "
+        "minus reflector height).",
     ]
     return result
 

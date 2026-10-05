@@ -11,6 +11,21 @@ from .sp3 import SatRecord
 N_LAGRANGE = 8
 
 
+def _nominal_spacing(times: list[float]) -> float | None:
+    """Median positive spacing of the record's time nodes (seconds)."""
+    diffs = sorted(b - a for a, b in zip(times, times[1:]) if b > a)
+    if not diffs:
+        return None
+    return diffs[len(diffs) // 2]
+
+
+def _has_gap(ts: list[float], step: float | None) -> bool:
+    """True if consecutive nodes are not evenly spaced (a node is missing)."""
+    if step is None:
+        return False
+    return any(abs((b - a) - step) > 1e-3 for a, b in zip(ts, ts[1:]))
+
+
 def _window(times: list[float], t: float, n: int) -> list[int] | None:
     """Indices of n consecutive nodes bracketing t, or None if out of range."""
     idx = bisect.bisect_right(times, t)
@@ -32,9 +47,11 @@ def satellite_position(rec: SatRecord, t: float) -> tuple[np.ndarray | None, str
     win = _window(rec.times, t, N_LAGRANGE)
     if win is None:
         return None, "outside SP3 coverage (needs 8-node window, no extrapolation)"
+    ts = [rec.times[k] for k in win]
+    if _has_gap(ts, _nominal_spacing(rec.times)):
+        return None, "interpolation window crosses missing SP3 nodes"
     if not all(rec.pos_valid[k] for k in win):
         return None, "zero/invalid coordinates inside interpolation window"
-    ts = [rec.times[k] for k in win]
     pos = np.zeros(3)
     for j, k in enumerate(win):
         w = 1.0
@@ -57,6 +74,8 @@ def satellite_clock(rec: SatRecord, t: float) -> tuple[float | None, str | None]
     if idx == len(times):
         return None, "outside SP3 clock coverage (no extrapolation)"
     a, b = idx - 1, idx
+    if _has_gap([times[a], times[b]], _nominal_spacing(times)):
+        return None, "clock nodes straddle a missing SP3 epoch"
     if not (rec.clk_valid[a] and rec.clk_valid[b]):
         return None, "missing satellite clock at adjacent node"
     t0, t1 = times[a], times[b]
